@@ -8,6 +8,16 @@
 # obs: as coordenadas [x, y, z] são x horizontal apontando para um dos lados, 
 # y vertical apontando para cima, z horizontal apontando para frente
 # =============================================================================
+# DIFERENÇAS em relação ao main.py original para asa voadora(marcadas com "# <<< ALTERADO"):
+#
+#   1. Importa FlyingWing em vez de usar SimpleAircraft diretamente
+#   2. Substitui os parâmetros de controle (três efetividades → duas)
+#   3. Cria AP como FlyingWing em vez de SimpleAircraft
+#   4. No loop: substitui três chamadas de controle por uma única: AP.elevon()
+#   5. Remove ctrl_state[2] (rudder) — asa voadora não tem leme convencional
+#
+# Leia os comentários "# <<< ALTERADO" para localizar exatamente o que mudou.
+# =============================================================================
 
 # importações necessárias de bibliotecas
 import numpy as np
@@ -29,6 +39,7 @@ from ui import *
 from scenery_objects import *
 from sound import *
 from alerts import *
+from flying_wing import FlyingWing # <<< ALTERADO: importa a nova classe
 
 def main():                # função principal, onde reside o simulador
     
@@ -139,14 +150,31 @@ def main():                # função principal, onde reside o simulador
     # Não é o CL clássico (que depende do AoA explicitamente via curva polar) — aqui é um escalar fixo que amplifica a sustentação.
     Cl = 1.2
     
-    # efetividade das superfícies de controle
-    # aileron (rolamento), elevator/ profundor (arfagem), rudder/leme (guinada)
-    # O torque real é: T = control_effectiveness[i] × ctrl_state[i] × |v|² (proporcional ao quadrado da velocidade), definido em rigidbody.py
-    control_effectiveness = np.array([1.8, 1.8, 2.5])
+    # --- Efetividades dos elevons ---                      # <<< ALTERADO
+    #
+    # No original havia três valores: [aileron, elevator, rudder]
+    # Agora há dois: um para cada eixo de controle dos elevons.
+    #
+    # effectiveness_pitch: quanto torque de arfagem um elevon gera por
+    #   unidade de deflexão por (m/s)². Equivale a control_effectiveness[1]
+    #   do original (valor era 1.8).
+    #
+    # effectiveness_roll: quanto torque de rolamento um elevon gera por
+    #   unidade de deflexão por (m/s)². Equivale a control_effectiveness[0]
+    #   do original (valor era 1.8).
+    #
+    # Em uma asa voadora, pitch e roll geralmente têm efetividades DIFERENTES
+    # porque a geometria da superfície de controle não é simétrica entre os
+    # dois modos. O XFLR5/AVL da área de Aerodinâmica fornecerá os valores
+    # corretos (dCm/dδe e dCl/dδa). Por ora, mantemos 1.8 para ambos.
+    #
+    effectiveness_pitch = 1.8   # <<< ALTERADO (era control_effectiveness[1])
+    effectiveness_roll  = 1.8   # <<< ALTERADO (era control_effectiveness[0])
+ 
 
     # cria o objeto avião de nome AP com os parâmetros definidos acima
     # a classe SimpleAircraft (definida em rigidbody.py) herda de RigidBody e adiciona a lógica aerodinâmica
-    AP = SimpleAircraft(plane_model, init_CoM,
+    AP = FlyingWing(plane_model, init_CoM,                    # <<< ALTERADO (FlyingWing em vez de SimpleAircraft)
                         init_pos, init_vel, init_accel,
                         init_orient, init_ang_vel, init_ang_accel,
                         init_mass, init_inertia,
@@ -256,13 +284,13 @@ def main():                # função principal, onde reside o simulador
     cam_move_up    = "Y"  # NOTA: mesma tecla que cam_move_fwd ("Y") — provável bug
     cam_move_dn    = "H"  # NOTA: mesma tecla que cam_move_bck ("H") — provável bug
 
-    # controles do avião
+    # controles do avião   <<< ALTERADO (retirado yaw)
     plane_pitch_up  = "S"  # Profundor: nariz para cima (cabrar)
     plane_pitch_dn  = "W"  # Profundor: nariz para baixo (picar)
     plane_roll_ccw  = "Q"  # Aileron: rolar para a esquerda
     plane_roll_cw   = "E"  # Aileron: rolar para a direita
-    plane_yaw_right = "D"  # Leme: guinada para a direita
-    plane_yaw_left  = "A"  # Leme: guinada para a esquerda
+    #plane_yaw_right = "D"  # Leme: guinada para a direita
+    #plane_yaw_left  = "A"  # Leme: guinada para a esquerda
     plane_throttle_up = "Z"  # Throttle: aumentar potência
     plane_throttle_dn = "X"  # Throttle: reduzir potência
 
@@ -282,8 +310,12 @@ def main():                # função principal, onde reside o simulador
     # dt (delta time) = duração do frame anterior, em segundos.
     # É a variável mais importante do simulador: ela conecta "o que acontece por segundo" com "o que acontece neste frame específico". ex: veloc += acel x dt
     dt = 0
-    # estado atual dos três controles [aileron, elevator, rudder]. vai de -1 a 1 (deflexão máxima negativa a máxima positiva)
-    ctrl_state = [0, 0, 0]
+    # --- Estado dos controles ---                               # <<< ALTERADO
+    # Original:  ctrl_state = [aileron, elevator, rudder]  →  3 valores
+    # Novo:      ctrl_state = [roll, pitch]                →  2 valores
+    # O índice [2] (rudder) foi eliminado completamente.
+    # A lógica de rampa suave (acumular / retornar ao neutro) foi mantida.
+    ctrl_state = [0.0, 0.0]   # <<< ALTERADO: era [0, 0, 0]
 
     # fatores de conversão de unidades para o HUD
     velocity_conversion_factor = 1
@@ -360,15 +392,18 @@ def main():                # função principal, onde reside o simulador
                 ctrl_state[0] = 0
 
         # yaw (leme): mesmo padrão gradual e suavizado
-        if kbd.is_pressed(plane_yaw_right):
-            ctrl_state[2] += 1 * dt
-        elif kbd.is_pressed(plane_yaw_left):
-            ctrl_state[2] -= 1 * dt
-        else:
-            if abs(ctrl_state[2]) > 0.3:
-                ctrl_state[2] *= 1 - 2 * dt
-            else:
-                ctrl_state[2] = 0
+        # --- YAW: REMOVIDO ---                                 # <<< ALTERADO
+        # O bloco inteiro de ctrl_state[2] (yaw/rudder) foi eliminado.
+        # Asa voadora sem dispositivo direcional: sem controle de guinada.
+        #if kbd.is_pressed(plane_yaw_right):
+        #    ctrl_state[2] += 1 * dt
+        #elif kbd.is_pressed(plane_yaw_left):
+        #    ctrl_state[2] -= 1 * dt
+        #else:
+        #    if abs(ctrl_state[2]) > 0.3:
+        #        ctrl_state[2] *= 1 - 2 * dt
+        #    else:
+        #        ctrl_state[2] = 0
 
         # throttle: 
         if kbd.is_pressed(plane_throttle_up):
@@ -380,10 +415,26 @@ def main():                # função principal, onde reside o simulador
             ctrl_state[i] = min(max(ctrl_state[i], -1), 1)
 
         # aplica comandos de controle como torques na aeronave
-        AP.aileron(ctrl_state[0])  # Gera torque no eixo Z (roll) proporcional a ctrl_state[0] × |v|²
-        AP.elevator(ctrl_state[1]) # Gera torque no eixo X (pitch) proporcional a ctrl_state[1] × |v|²
-        AP.rudder(ctrl_state[2])   # Gera torque no eixo Y (yaw) proporcional a ctrl_state[2] × |v|²
-
+        #AP.aileron(ctrl_state[0])  # Gera torque no eixo Z (roll) proporcional a ctrl_state[0] × |v|²
+        #AP.elevator(ctrl_state[1]) # Gera torque no eixo X (pitch) proporcional a ctrl_state[1] × |v|²
+        #AP.rudder(ctrl_state[2])   # Gera torque no eixo Y (yaw) proporcional a ctrl_state[2] × |v|²
+        # --- APLICA OS CONTROLES --- <<< ALTERADO: lógica completamente diferente
+        #
+        # ORIGINAL (3 chamadas independentes):
+        #     AP.aileron(ctrl_state[0])    → torque roll
+        #     AP.elevator(ctrl_state[1])   → torque pitch
+        #     AP.rudder(ctrl_state[2])     → torque yaw
+        #
+        # NOVO (1 chamada com mixagem interna):
+        #     AP.elevon(delta_pitch, delta_roll)
+        #
+        # A mixagem acontece DENTRO de elevon():
+        #     δL = clip(pitch + roll, -1, +1)
+        #     δR = clip(pitch - roll, -1, +1)
+        #
+        # O piloto comanda pitch e roll como antes — a mixagem é transparente.
+        AP.elevon(ctrl_state[1], ctrl_state[0])   # <<< ALTERADO
+        
         # troca de unidades no HUD (display)
         if kbd.is_pressed("M"): # superior metric units for the superior people
             velocity_conversion_factor = 1
@@ -430,7 +481,16 @@ def main():                # função principal, onde reside o simulador
         # GRAPHICS
         # renderização da cena 3D ---------------------------------------------------------
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
-        drawScene(main_cam, floor, bodies, scenery_objects, ctrl_state, first_person_ui)
+        #drawScene(main_cam, floor, bodies, scenery_objects, ctrl_state, first_person_ui)
+        # --- Adapta ctrl_state para drawScene ---               # <<< ALTERADO
+        #
+        # drawScene() espera receber ctrl_state com 3 valores [roll, pitch, yaw]
+        # para renderizar as superfícies de controle no cockpit.
+        # Como agora temos só 2, passamos o terceiro como 0.
+        # Alternativamente, passe AP.delta_left e AP.delta_right para visualizar
+        # os elevons reais se o modelo 3D suportar.
+        ctrl_state_3 = [ctrl_state[0], ctrl_state[1], 0.0]     # <<< ALTERADO
+        drawScene(main_cam, floor, bodies, scenery_objects, ctrl_state_3, first_person_ui)
 
         # HUD (display) - instrumentos na tela --------------------------------------------
         alt_string = "Alt: " + str(int(AP.pos[1] * altitude_conversion_factor))
@@ -438,6 +498,11 @@ def main():                # função principal, onde reside o simulador
         throttle_str = "Throttle: " + str(int(AP.throttle))
         AoA_str = "AOA: " + str(round(AoA, 2))
         G_str = "G: " + str(round(G, 2))
+        # --- Linha adicional no HUD: deflexões dos elevons ---  # <<< ALTERADO
+        # Permite o piloto ver exatamente o que cada elevon está fazendo,
+        # o que é especialmente útil durante o treinamento inicial com
+        # a configuração de asa voadora.
+        elevon_str = (f"EL: {AP.delta_left:+.2f}  ER: {AP.delta_right:+.2f}")
 
         magenta = Color(1, 0, 1)
         red = Color(1, 0, 0)
@@ -465,6 +530,7 @@ def main():                # função principal, onde reside o simulador
         render_AN(throttle_str, throttle_color, [-7, -4.5], main_cam, fpu=first_person_ui)
         render_AN(AoA_str, AoA_color, [-7, -5.5], main_cam, fpu=first_person_ui)
         render_AN(G_str, G_color, [-7, -5], main_cam, fpu=first_person_ui)
+        render_AN(elevon_str,    magenta,          [-7, -6.0], main_cam, fpu=first_person_ui)  # <<< ALTERADO
         
         glfw.swap_buffers(window)
 
